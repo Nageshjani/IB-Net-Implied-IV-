@@ -58,7 +58,8 @@ def atm_call_option(contract_df,stock_price):
         atm=strike
         atm_index=symbolList.index(local_symbol)
 
-    print('atm:',atm)
+    ticker=local_symbol.split()[0]
+    print(ticker,'Atm:',atm)
     call_local_symbols=symbolList[atm_index-5:atm_index+5]
     return call_local_symbols
 
@@ -85,7 +86,7 @@ def atm_put_option(contract_df,stock_price):
  
 
 # tickers = ["INTC","AMZN","MSFT"]
-tickers = ["AMZN","TSLA","MSFT"]
+tickers = ["AMZN","TSLA"]
 
 class TradingApp(EWrapper, EClient):
     def __init__(self):
@@ -101,6 +102,8 @@ class TradingApp(EWrapper, EClient):
         self.bidaskData={}
         self.optionDeltas=[]
         self.greekMain={}
+        self.d_bid={}
+        self.d_ask={}
         
         for ticker in tickers:
             self.optionChainGreeks[ticker]=defaultdict()
@@ -111,7 +114,7 @@ class TradingApp(EWrapper, EClient):
         print(self.optionChainGreeks)
 
 
-
+    #reqId < 100:
     def tickPrice(self, reqId, tickType, price, attrib):
         super().tickPrice(reqId, tickType, price, attrib)
         # print('tickType:',tickType,'price:',price)
@@ -122,22 +125,25 @@ class TradingApp(EWrapper, EClient):
                     streaming_event.set()  # set the event to notify that we have received the last price
                     
 
-        if reqId>=1000:
-            print(reqId)
-            local_symbol=self.options[reqId-1000]
-            ticker=local_symbol.split()[0]
-            right = local_symbol.split()[1][6]
-            d={}
+        if reqId>=1000 and reqId<1100: 
             if tickType == 1:
-                if price:      
-                    d['bid']  =price            
-                    self.bidaskData[local_symbol]
+                local_symbol=self.optionDeltas[reqId-1000]
+                if price:     
+                        # print(reqId,'bid',price) 
+                        self.d_bid[local_symbol]  =price   
+                        stream_bid_event.set()  
+
+        if reqId>=1100 and reqId<2000 :
             if tickType == 2:
-                if price:
-                    self.bidaskData[local_symbol]['ask']=price
+                local_symbol=self.optionDeltas[reqId-1100]
+                if price:     
+                        # print(reqId,'ask',price) 
+                        self.d_ask[local_symbol]  =price   
+                        stream_ask_event.set()     
+                    
     def stop_streaming(self,reqId):
         super().cancelMktData(reqId)
-        print('streaming stopped for ',reqId)            
+        #print('streaming stopped for ',reqId)            
                 
         
     def error(self, reqId, errorCode: int, errorString: str, advancedOrderRejectJson = ""):
@@ -146,6 +152,8 @@ class TradingApp(EWrapper, EClient):
                  print("Error. Id:", reqId, "Code:", errorCode, "Msg:", errorString, "AdvancedOrderRejectJson:", advancedOrderRejectJson)
              else:
                  print("Error. Id:", reqId, "Code:", errorCode, "Msg:", errorString)        
+    
+    
     def contractDetails(self, reqId, contractDetails):
         if reqId not in self.data:
             self.data[reqId] = [{"expiry":contractDetails.contract.lastTradeDateOrContractMonth,
@@ -160,31 +168,32 @@ class TradingApp(EWrapper, EClient):
     
     def contractDetailsEnd(self, reqId):
         super().contractDetailsEnd(reqId)
-        print("ContractDetailsEnd. ReqId:", reqId)
+        #print("ContractDetailsEnd. ReqId:", reqId)
         self.df_data[tickers[reqId]] = pd.DataFrame(self.data[reqId])
         
         # fileName=tickers[reqId]+'.csv'
         # csvFile=self.df_data[tickers[reqId]].to_csv(fileName)
         contract_event.set()
-
-    
     def tickOptionComputation(self, reqId, tickType, tickAttrib,impliedVol, delta, optPrice, pvDividend,gamma, vega, theta, undPrice):
             
             super().tickOptionComputation(reqId, tickType, tickAttrib, impliedVol, delta,optPrice, pvDividend, gamma, vega, theta, undPrice)
-            # print('ticktype: ',tickType,'redId: ',reqId)
+            #print('ticktype: ',tickType,'redId: ',reqId)
             if tickType == 11: 
                 if delta and impliedVol and optPrice and gamma  and vega and theta:
                             greek={'delta':delta,'impliedVol':impliedVol,'optPrice':optPrice,'gamma':gamma,'vega':vega,'theta':theta,'bid':None,'ask':None }
-    
+
                             if reqId >=500 and reqId<1000:
                                     local_symbol=self.options[reqId-500]
                                     ticker=local_symbol.split()[0]
                                     right = local_symbol.split()[1][6]
                                     self.optionChainGreeks[ticker][right][local_symbol]=greek
-                                    # greeks_event.set()
+                                    greeks_event.set()
 
-                            if reqId>=5000 and reqId<=6000:
+                            if reqId>=5000 and reqId<=6000: 
                                             local_symbol=self.optionDeltas[reqId-5000]
+                                            if local_symbol in  self.d_bid and local_symbol in self.d_ask:
+                                                    greek['bid']=self.d_bid[local_symbol]
+                                                    greek['ask']=self.d_ask[local_symbol]
                                             self.greekMain[local_symbol]=greek
                                             stream_delta_event.set()
 
@@ -230,7 +239,6 @@ time.sleep(3)
 #reqId/0-100/Contracts_Download
 contract_event = threading.Event()
 def Contracts_Download():
-    print('Requesting Contractdetails')
     for ticker in tickers:
         contract_event.clear() 
         app.reqContractDetails(tickers.index(ticker), usTechOpt(ticker)) 
@@ -250,17 +258,18 @@ greeks_event = threading.Event()
 def streamOptChain(opt_symbols):
         while True:
             for opt in opt_symbols:
-                print(500+opt_symbols.index(opt))
-                # app.reqMarketDataType
+                #print(500+opt_symbols.index(opt))
+                greeks_event.clear()
                 app.reqMktData(reqId=500+opt_symbols.index(opt), 
                             contract=specificOpt(opt),
                             genericTickList="106",
                             snapshot=False,
                             regulatorySnapshot=False,
                             mktDataOptions=[])
-                time.sleep(1)
                 greeks_event.wait() 
                 app.stop_streaming(500+opt_symbols.index(opt))
+            
+            
             time.sleep(300)
 
 
@@ -269,11 +278,13 @@ options = app.options
 optGreeksStreamThread = threading.Thread(target=streamOptChain, args=(options,))
 optGreeksStreamThread.start()
 time.sleep(3) 
+print('OptionChain Activated!')
 
 
 #app.optionDeltas
 def updateDeltas():
      while True:
+        print('updateDelta')
         app.optionDeltas=[]
         for ticker in tickers:
             callGreeks=app.optionChainGreeks[ticker]['C']
@@ -281,7 +292,7 @@ def updateDeltas():
             resCallLocalSymbol=None
             resPutLocalSymbol=None
 
-            if app.optionChainGreeks[ticker]['C']==10 and app.optionChainGreeks[ticker]['P']==10:
+            if app.optionChainGreeks[ticker]['C'] and app.optionChainGreeks[ticker]['P']:
                 minn=float('inf')
                 for local_symbol in  callGreeks:
                     delta=callGreeks[local_symbol]['delta']
@@ -299,10 +310,13 @@ def updateDeltas():
                         resPutLocalSymbol=local_symbol
                 
                 if resCallLocalSymbol and resPutLocalSymbol:
+                    # print('L 305 Finally Found Deltas!')
+                    # print(resCallLocalSymbol)
+                    # print(resPutLocalSymbol)
                     app.optionDeltas.append(resCallLocalSymbol)
                     app.optionDeltas.append(resPutLocalSymbol)
-
-        time.sleep(300)
+        #print('L 310 app.optionDeltas',app.optionDeltas)
+        time.sleep(60)
     
 
 updateDeltaThread=threading.Thread(target=updateDeltas) 
@@ -317,20 +331,24 @@ time.sleep(2)
 
 #reqId/5000-6000/streamDeltas
 stream_delta_event=threading.Event()
-def streamDeltas(opt_symbols):
+def streamDeltas():
+        
         while True:
+           
             opt_symbols=app.optionDeltas
-            if len(app.optionDeltas)!=(len(tickers)*2):
+            if len(app.optionDeltas)==(len(tickers)*2):
                 for opt in opt_symbols:
+                    stream_delta_event.clear()
                     app.reqMktData(reqId=5000+opt_symbols.index(opt), 
                                 contract=specificOpt(opt),
                                 genericTickList="106",
                                 snapshot=False,
                                 regulatorySnapshot=False,
                                 mktDataOptions=[])
-                time.sleep(1)
-                stream_delta_event.wait()
-                app.stop_streaming(5000+opt_symbols.index(opt))
+    
+                    stream_delta_event.wait()
+                    app.stop_streaming(5000+opt_symbols.index(opt))
+            #print('Main Greek',app.greekMain)
             time.sleep(10)
             
 
@@ -342,17 +360,24 @@ time.sleep(3)
 
 
 def printDeltas():
-        while len(app.greekMain)==app.optionDeltas:
-            i=0
-            while i<=len(app.optionDeltas):
-                  callGreek=app.greekMain[app.optionDeltas[i]]
-                  putGreek=app.greekMain[app.optionDeltas[i+1]]
-                  netIv=callGreek['impliedVol']-putGreek['impliedVol']
-                  ticker=app.optionDeltas[i].split()[0]
-                  print(ticker,netIv)
-                  i=i+2
+        while True: 
+            if len(app.optionDeltas)==(len(tickers)*2):
+                if len(app.greekMain)==len(app.optionDeltas):
+                    i=0
+                    while i<len(app.optionDeltas):
+                        callGreek=app.greekMain[app.optionDeltas[i]]
+                        putGreek=app.greekMain[app.optionDeltas[i+1]]
+                        netIv=callGreek['impliedVol']-putGreek['impliedVol']
+                        ticker=app.optionDeltas[i].split()[0]
+                        callask=callGreek['ask']
+                        callbid=callGreek['bid']
+                        putask=putGreek['ask']
+                        putbid=putGreek['bid']
+                        
+                        print(ticker,'NetIv: ',netIv,'Call/Bid: ',callbid,'Call/Ask: ',callask,'Put/Bid: ',putbid,'Put/Ask: ',putask)
+                        i=i+2
             time.sleep(5)
-            
+                
         
 printDeltasThread = threading.Thread(target=printDeltas)
 printDeltasThread.start()
@@ -361,5 +386,67 @@ time.sleep(3)
  
 
 
+
+
+
+
+
+stream_bid_event=threading.Event()
+def streamBid():
+        
+        while True:
+            # print('Inside streambidask')
+           
+            opt_symbols=app.optionDeltas
+            
+            if len(app.optionDeltas)==(len(tickers)*2):
+                # app.d_bid={}
+                for opt in opt_symbols:
+                        stream_bid_event.clear()
+                        app.reqMktData(reqId=1000+opt_symbols.index(opt), 
+                                    contract=specificOpt(opt),
+                                    genericTickList="",
+                                    snapshot=False,
+                                    regulatorySnapshot=False,
+                                    mktDataOptions=[])
+        
+                        stream_bid_event.wait()
+                        app.stop_streaming(1000+opt_symbols.index(opt))
+            # print('greek main with bidask',app.greekMain)  
+            time.sleep(3)
+            
+
+
+streamBidAskThread = threading.Thread(target=streamBid)
+streamBidAskThread.start()
+time.sleep(3) 
+
+stream_ask_event=threading.Event()
+def streamAsk():
+        
+        while True:
+           
+            opt_symbols=app.optionDeltas
+            if len(app.optionDeltas)==(len(tickers)*2):
+                # app.d_ask={}
+                for opt in opt_symbols:
+                        stream_ask_event.clear()
+                        app.reqMktData(reqId=1100+opt_symbols.index(opt), 
+                                    contract=specificOpt(opt),
+                                    genericTickList="",
+                                    snapshot=False,
+                                    regulatorySnapshot=False,
+                                    mktDataOptions=[])
+        
+                        stream_ask_event.wait()
+                        app.stop_streaming(1100+opt_symbols.index(opt))
+           
+            time.sleep(3)
+            
+
+
+streamAskThread = threading.Thread(target=streamAsk)
+streamAskThread.start()
+time.sleep(3) 
 
 ```
